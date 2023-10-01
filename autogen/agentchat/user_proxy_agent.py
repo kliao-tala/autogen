@@ -1,5 +1,10 @@
 from .conversable_agent import ConversableAgent
-from typing import Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
+from .agent import Agent
+from autogen.code_utils import (
+    UNKNOWN,
+    extract_code,
+)
 
 
 class UserProxyAgent(ConversableAgent):
@@ -80,3 +85,44 @@ class UserProxyAgent(ConversableAgent):
             llm_config,
             default_auto_reply,
         )
+
+    # override method of super class
+    def generate_code_execution_reply(
+        self,
+        messages: Optional[List[Dict]] = None,
+        sender: Optional[Agent] = None,
+        config: Optional[Any] = None,
+    ):
+        """Generate a reply using code execution."""
+        code_execution_config = config if config is not None else self._code_execution_config
+        if code_execution_config is False:
+            return False, None
+        if messages is None:
+            messages = self._oai_messages[sender]
+        last_n_messages = code_execution_config.pop("last_n_messages", 1)
+        for i in range(min(len(messages), last_n_messages)):
+            message = messages[-(i + 1)]
+            code_blocks = extract_code(message["content"])
+            if len(code_blocks) == 1 and code_blocks[0][0] == UNKNOWN:
+                # no code block is found, lang should be `UNKNOWN`
+
+                if i == last_n_messages - 1:
+                    code_execution_config["last_n_messages"] = last_n_messages
+                    return False, None
+                continue
+                # code_blocks, _ = find_code(messages, sys_msg=self._oai_system_message, **self.llm_config)
+                # if len(code_blocks) == 1 and code_blocks[0][0] == UNKNOWN:
+                #     return code_blocks[0][1]
+            # try to execute the code
+            exitcode, logs = self.execute_code_blocks(code_blocks)
+            exitcode2str = "execution succeeded" if exitcode == 0 else "execution failed"
+
+            # if code succeeded, don't return log
+            # this is to reduce the verbosity of the message which is sent
+            # back to the assistant, prevents exceeding the token max when
+            # log includes many installed dependencies.
+            logs = logs if exitcode == 1 else "execution succeeded"
+            
+            break
+        code_execution_config["last_n_messages"] = last_n_messages
+        return True, f"exitcode: {exitcode} ({exitcode2str})\nCode output: {logs}"
